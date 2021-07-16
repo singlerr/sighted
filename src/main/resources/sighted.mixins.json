@@ -1,0 +1,19 @@
+{
+  "required": true,
+  "package": "com.kgb_8375.sighted.mixin",
+  "compatibilityLevel": "JAVA_8",
+  "refmap": "sighted.refmap.json",
+  "mixins": [
+  ],
+  "client": [
+    "BiomeManagerAccessor",
+    "ChunkLightProviderMixin",
+    "ClientChunkProviderMixin",
+    "LightEngineAccessor",
+    "MinecraftMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "minVersion": "0.8"
+}
