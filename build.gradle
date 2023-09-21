@@ -18,7 +18,7 @@ version = '1.1.0'
 group = 'com.kgb_8375.sighted' // http://maven.apache.org/guides/mini/guide-naming-conventions.html
 archivesBaseName = 'sighted'
 
-java.toolchain.languageVersion = JavaLanguageVersion.of(8) // Mojang ships Java 8 to end users, so your mod should target Java 8.
+sourceCompatibility = targetCompatibility = compileJava.sourceCompatibility = compileJava.targetCompatibility = '1.8'
 
 println('Java: ' + System.getProperty('java.version') + ' JVM: ' + System.getProperty('java.vm.version') + '(' + System.getProperty('java.vendor') + ') Arch: ' + System.getProperty('os.arch'))
 minecraft {
@@ -45,7 +45,7 @@ minecraft {
             workingDirectory project.file('run')
 
             // mixin args
-            arg "-mixin.config=sighted.mixins.json"
+            //arg "-mixin.config=sighted.mixins.json"
 
             // Recommended logging data for a userdev environment
             // The markers can be changed as needed.
