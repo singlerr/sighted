@@ -1,29 +1,27 @@
 package com.kgb_8375.sighted.config;
 
-import net.minecraftforge.common.ForgeConfigSpec;
+import net.minecraftforge.common.config.Config;
 
+@Config(modid = "sighted")
 public class ClientConfiguration {
 
-    public final ForgeConfigSpec.BooleanValue   enabled;
-    public final ForgeConfigSpec.BooleanValue   noBlockEntities;
-    public final ForgeConfigSpec.IntValue       unloadDelaySecs;
-    public final ForgeConfigSpec.IntValue       maxRenderDistance;
+    @Config.Comment("Mod enabled")
+    public static boolean enabled = true;
 
-    protected ClientConfiguration(final ForgeConfigSpec.Builder builder) {
-        builder.push("Sighted Configuration Settings");
+    @Config.Comment({"Do not load block entities (e.g. chests) in fake chunks.",
+            "These need updating every tick which can add up.",
+            "Enabled by default because the render distance for block entities is usually smaller than the server-view distance anyway."})
+    public static boolean noBlockEntities = true;
 
-        builder.comment("Mod enabled");
-        enabled = builder.define("enabled", true);
+    @Config.Comment({"Delays the unloading of chunks which are outside your view distance.",
+            "Saves you from having to reload all chunks when leaving the area for a short moment (e.g. cut scenes).",
+            "Does not work across dimensions."})
+    @Config.RangeInt(min = 1, max = 3600)
+    public static int unloadDelaySecs = 60;
 
-        builder.comment("Do not load block entities (e.g. chests) in fake chunks.\\nThese need updating every tick which can add up.\\n\\nEnabled by default because the render distance for block entities is usually smaller than the server-view distance anyway.");
-        noBlockEntities = builder.define("noBlockEntities", true);
+    @Config.Comment({"Changes the maximum value configurable for Render Distance.",
+            "Requires Optifine"})
+    @Config.RangeInt(min = 6, max = 64)
+    public static int maxRenderDistance = 32;
 
-        builder.comment("Delays the unloading of chunks which are outside your view distance.\nSaves you from having to reload all chunks when leaving the area for a short moment (e.g. cut scenes).\nDoes not work across dimensions.");
-        unloadDelaySecs = builder.defineInRange("unloadDelaySecs", 60, 1, 3600);
-
-        builder.comment("Changes the maximum value configurable for Render Distance.\n\n Requires Optifine");
-        maxRenderDistance = builder.defineInRange("maxRenderDistance", 32, 6, 64);
-
-        builder.pop();
-    }
 }

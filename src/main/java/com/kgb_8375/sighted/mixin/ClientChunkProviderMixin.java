@@ -2,16 +2,13 @@ package com.kgb_8375.sighted.mixin;
 
 import com.kgb_8375.sighted.*;
 import com.kgb_8375.sighted.ext.ClientChunkProviderExt;
-import com.mojang.datafixers.util.Pair;
-import net.minecraft.client.multiplayer.ClientChunkProvider;
-import net.minecraft.client.world.ClientWorld;
-import net.minecraft.nbt.CompoundNBT;
-import net.minecraft.network.PacketBuffer;
+import net.minecraft.client.multiplayer.ChunkProviderClient;
+import net.minecraft.client.multiplayer.WorldClient;
+import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.util.math.ChunkPos;
-import net.minecraft.world.biome.BiomeContainer;
+import net.minecraft.world.World;
 import net.minecraft.world.chunk.Chunk;
-import net.minecraft.world.chunk.ChunkStatus;
-import net.minecraft.world.lighting.WorldLightManager;
+import org.apache.commons.lang3.tuple.Pair;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -24,30 +21,37 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
 
-@Mixin(ClientChunkProvider.class)
+@Mixin(ChunkProviderClient.class)
 public abstract class ClientChunkProviderMixin implements ClientChunkProviderExt {
-
-    @Shadow @Final private Chunk emptyChunk;
-
-    @Shadow @Nullable public abstract Chunk getChunk(int i, int j, ChunkStatus chunkStatus, boolean bl);
-    @Shadow public abstract WorldLightManager getLightEngine();
-    @Shadow private static int calculateStorageRange(int loadDistance) { throw new AssertionError(); }
-
-    protected FakeChunkManager sightedChunkManager;
 
     // Tracks which real chunks are visible (whether or not the were actually received), so we can
     // properly unload (i.e. save and replace with fake) them when the server center pos or view distance changes.
+    @Unique
     private final VisibleChunksTracker realChunksTracker = new VisibleChunksTracker();
-
     // List of real chunks saved just before they are unloaded, so we can restore fake ones in their place afterwards
-    private final List<Pair<Long, CompoundNBT>> sightedChunkReplacements = new ArrayList<>();
+    private final List<Pair<Long, NBTTagCompound>> sightedChunkReplacements = new ArrayList<>();
+    protected FakeChunkManager sightedChunkManager;
+    @Shadow
+    @Final
+    private Chunk blankChunk;
+
+    @Override
+    public VisibleChunksTracker getRealChunksTracker() {
+        return realChunksTracker;
+    }
+
+    @Shadow
+    @Nullable
+    public abstract Chunk getLoadedChunk(int x, int z);
 
     @Inject(method = "<init>", at = @At("RETURN"))
-    private void sightedInit(ClientWorld world, int loadDistance, CallbackInfo ci) {
+    private void sightedInit(World world, CallbackInfo ci) throws ExecutionException, InterruptedException {
+
         if (Sighted.getInstance().isEnabled()) {
-            sightedChunkManager = new FakeChunkManager(world, (ClientChunkProvider) (Object) this);
-            realChunksTracker.update(0, 0, calculateStorageRange(loadDistance), null, null);
+            sightedChunkManager = new FakeChunkManager((WorldClient) world, (ChunkProviderClient) (Object) this);
+            realChunksTracker.update(0, 0, 8192, null, null);
         }
     }
 
@@ -56,10 +60,10 @@ public abstract class ClientChunkProviderMixin implements ClientChunkProviderExt
         return sightedChunkManager;
     }
 
-    @Inject(method = "getChunk", at = @At("RETURN"), cancellable = true)
-    private void getSightedChunk(int x, int z, ChunkStatus chunkStatus, boolean orEmpty, CallbackInfoReturnable<Chunk> ci) {
+    @Inject(method = "getLoadedChunk", at = @At(value = "RETURN", shift = At.Shift.BEFORE), cancellable = true)
+    private void getSightedChunk(int x, int z, CallbackInfoReturnable<Chunk> cir) {
         // Did we find a live chunk?
-        if (ci.getReturnValue() != (orEmpty ? emptyChunk : null)) {
+        if (cir.getReturnValue() != blankChunk) {
             return;
         }
 
@@ -70,10 +74,11 @@ public abstract class ClientChunkProviderMixin implements ClientChunkProviderExt
         // Otherwise, see if we've got one
         Chunk chunk = sightedChunkManager.getChunk(x, z);
         if (chunk != null) {
-            ci.setReturnValue(chunk);
+            cir.setReturnValue(chunk);
         }
     }
-
+    //Moved to NetHandlerPlayClientMixin
+    /*
     @Inject(method = "replaceWithPacketData", at = @At("HEAD"))
     private void sightedUnloadFakeChunk(int x, int z, BiomeContainer biomes, PacketBuffer buf, CompoundNBT tag, int verticalStripBuffer, boolean complete, CallbackInfoReturnable<Chunk> cir) {
         if (sightedChunkManager == null) {
@@ -85,18 +90,21 @@ public abstract class ClientChunkProviderMixin implements ClientChunkProviderExt
         sightedChunkManager.unload(x, z, true);
     }
 
-    @Unique
-    private void saveRealChunk(long chunkPos) {
-        int chunkX = ChunkPos.getX(chunkPos);
-        int chunkZ = ChunkPos.getZ(chunkPos);
+     */
 
-        Chunk chunk = getChunk(chunkX, chunkZ, ChunkStatus.FULL, false);
+    @Unique
+    @Override
+    public void saveRealChunk(long chunkPos) {
+        int chunkX = CompatChunkPos.getX(chunkPos);
+        int chunkZ = CompatChunkPos.getZ(chunkPos);
+
+        Chunk chunk = getLoadedChunk(chunkX, chunkZ);
         if (chunk == null || chunk instanceof FakeChunk) {
             return;
         }
 
         FakeChunkStorage storage = sightedChunkManager.getStorage();
-        CompoundNBT tag = storage.serialize(chunk, getLightEngine());
+        NBTTagCompound tag = storage.serialize(chunk);
         storage.save(chunk.getPos(), tag);
 
         if (sightedChunkManager.shouldBeLoaded(chunkX, chunkZ)) {
@@ -105,17 +113,18 @@ public abstract class ClientChunkProviderMixin implements ClientChunkProviderExt
     }
 
     @Unique
-    private void substituteFakeChunksForUnloadedRealOnes() {
-        for (Pair<Long, CompoundNBT> entry : sightedChunkReplacements) {
-            long chunkPos = entry.getFirst();
-            int chunkX = ChunkPos.getX(chunkPos);
-            int chunkZ = ChunkPos.getZ(chunkPos);
-            sightedChunkManager.load(chunkX, chunkZ, entry.getSecond(), sightedChunkManager.getStorage());
+    @Override
+    public void substituteFakeChunksForUnloadedRealOnes() {
+        for (Pair<Long, NBTTagCompound> entry : sightedChunkReplacements) {
+            long chunkPos = entry.getKey();
+            int chunkX = CompatChunkPos.getX(chunkPos);
+            int chunkZ = CompatChunkPos.getZ(chunkPos);
+            sightedChunkManager.load(chunkX, chunkZ, entry.getValue(), sightedChunkManager.getStorage());
         }
         sightedChunkReplacements.clear();
     }
 
-    @Inject(method = "drop", at = @At("HEAD"))
+    @Inject(method = "unloadChunk", at = @At("HEAD"))
     private void sightedSaveChunk(int chunkX, int chunkZ, CallbackInfo ci) {
         if (sightedChunkManager == null) {
             return;
@@ -123,12 +132,14 @@ public abstract class ClientChunkProviderMixin implements ClientChunkProviderExt
 
         saveRealChunk(ChunkPos.asLong(chunkX, chunkZ));
     }
-
+    //Moved to WorldClientMixin
+    /*
     @Inject(method = "updateViewCenter", at = @At("HEAD"))
     private void sightedSaveChunksBeforeMove(int x, int z, CallbackInfo ci) {
         if (sightedChunkManager == null) {
             return;
         }
+
 
         realChunksTracker.updateCenter(x, z, this::saveRealChunk, null);
     }
@@ -142,7 +153,9 @@ public abstract class ClientChunkProviderMixin implements ClientChunkProviderExt
         realChunksTracker.updateRenderDistance(calculateStorageRange(loadDistance), this::saveRealChunk, null);
     }
 
-    @Inject(method = { "drop", "updateViewCenter", "updateViewRadius" }, at = @At("RETURN"))
+     */
+
+    @Inject(method = {"unloadChunk"}, at = @At("RETURN"))
     private void sightedSubstituteFakeChunksForUnloadedRealOnes(CallbackInfo ci) {
         if (sightedChunkManager == null) {
             return;
@@ -151,14 +164,6 @@ public abstract class ClientChunkProviderMixin implements ClientChunkProviderExt
         substituteFakeChunksForUnloadedRealOnes();
     }
 
-    @Inject(method = "gatherStats", at = @At("RETURN"), cancellable = true)
-    private void sightedDebugString(CallbackInfoReturnable<String> cir) {
-        if (sightedChunkManager == null) {
-            return;
-        }
-
-        cir.setReturnValue(cir.getReturnValue() + " " + sightedChunkManager.getDebugString());
-    }
 
     @Override
     public void sighted_onFakeChunkAdded(int x, int z) {

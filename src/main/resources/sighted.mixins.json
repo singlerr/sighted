@@ -6,11 +6,10 @@
   "mixins": [
   ],
   "client": [
-    "BiomeManagerAccessor",
-    "ChunkLightProviderMixin",
     "ClientChunkProviderMixin",
-    "LightEngineAccessor",
-    "MinecraftMixin"
+    "MinecraftMixin",
+    "NetHandlerPlayerClientMixin",
+    "WorldClientMixin"
   ],
   "injectors": {
     "defaultRequire": 1

@@ -1,37 +1,28 @@
 package com.kgb_8375.sighted;
 
 import com.kgb_8375.sighted.config.ClientConfiguration;
-import com.kgb_8375.sighted.ext.ChunkLightProviderExt;
 import com.kgb_8375.sighted.ext.ClientChunkProviderExt;
-import com.kgb_8375.sighted.mixin.BiomeManagerAccessor;
-import com.kgb_8375.sighted.mixin.LightEngineAccessor;
-import com.mojang.datafixers.util.Pair;
 import io.netty.util.concurrent.DefaultThreadFactory;
 import it.unimi.dsi.fastutil.longs.*;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.entity.player.ClientPlayerEntity;
-import net.minecraft.client.multiplayer.ClientChunkProvider;
+import net.minecraft.client.entity.EntityPlayerSP;
+import net.minecraft.client.multiplayer.ChunkProviderClient;
 import net.minecraft.client.multiplayer.ServerData;
-import net.minecraft.client.world.ClientWorld;
-import net.minecraft.command.Commands;
-import net.minecraft.nbt.CompoundNBT;
-import net.minecraft.resources.*;
-import net.minecraft.server.MinecraftServer;
+import net.minecraft.client.multiplayer.WorldClient;
+import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.server.integrated.IntegratedServer;
-import net.minecraft.util.RegistryKey;
-import net.minecraft.util.ResourceLocation;
 import net.minecraft.util.Util;
-import net.minecraft.util.concurrent.RecursiveEventLoop;
-import net.minecraft.util.datafix.codec.DatapackCodec;
 import net.minecraft.util.math.ChunkPos;
-import net.minecraft.util.math.SectionPos;
-import net.minecraft.util.registry.DynamicRegistries;
-import net.minecraft.world.World;
-import net.minecraft.world.biome.provider.BiomeProvider;
+import net.minecraft.world.DimensionType;
+import net.minecraft.world.biome.BiomeProvider;
 import net.minecraft.world.chunk.Chunk;
-import net.minecraft.world.chunk.ChunkStatus;
-import net.minecraft.world.storage.*;
+import net.minecraft.world.storage.ISaveFormat;
+import net.minecraft.world.storage.ISaveHandler;
+import net.minecraft.world.storage.SaveHandler;
+import org.apache.commons.lang3.tuple.MutablePair;
+import org.apache.commons.lang3.tuple.Pair;
+import org.apache.logging.log4j.LogManager;
 
 import javax.annotation.Nullable;
 import java.io.File;
@@ -40,25 +31,27 @@ import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.FutureTask;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 public class FakeChunkManager {
 
     private static final String FALLBACK_LEVEL_NAME = "sighted-fallback";
-    private static final Minecraft client = Minecraft.getInstance();
-
-    private final ClientWorld world;
-    private final ClientChunkProvider clientChunkProvider;
+    private static final Minecraft client = Minecraft.getMinecraft();
+    // There unfortunately is only a synchronous api for loading chunks (even though that one just waits on a
+    // CompletableFuture, annoying but oh well), so we call that blocking api from a separate thread pool.
+    // The size of the pool must be sufficiently large such that there is always at least one query operation
+    // running, as otherwise the storage io worker will start writing chunks which slows everything down to a crawl.
+    private static final ExecutorService loadExecutor = Executors.newFixedThreadPool(8, new DefaultThreadFactory("sighted-loading", true));
+    private final WorldClient world;
+    private final ChunkProviderClient clientChunkProvider;
     private final ClientChunkProviderExt clientChunkProviderExt;
     private final FakeChunkStorage storage;
     private final @Nullable FakeChunkStorage fallbackStorage;
-    private int ticksSinceLastSave;
-
     private final Long2ObjectMap<Chunk> fakeChunks = Long2ObjectMaps.synchronize(new Long2ObjectOpenHashMap<>());
     private final VisibleChunksTracker chunkTracker = new VisibleChunksTracker();
     private final Long2LongMap toBeUnloaded = new Long2LongOpenHashMap();
@@ -66,44 +59,63 @@ public class FakeChunkManager {
     // [toBeUnloaded] to see if the entry has since been removed / the time reset. This way we do not need
     // to remove entries from the middle of the queue.
     private final Deque<Pair<Long, Long>> unloadQueue = new ArrayDeque<>();
-
-    // There unfortunately is only a synchronous api for loading chunks (even though that one just waits on a
-    // CompletableFuture, annoying but oh well), so we call that blocking api from a separate thread pool.
-    // The size of the pool must be sufficiently large such that there is always at least one query operation
-    // running, as otherwise the storage io worker will start writing chunks which slows everything down to a crawl.
-    private static final ExecutorService loadExecutor = Executors.newFixedThreadPool(8, new DefaultThreadFactory("sighted-loading", true));
     private final Long2ObjectMap<LoadingJob> loadingJobs = new Long2ObjectOpenHashMap<>();
+    private int ticksSinceLastSave;
 
-    public FakeChunkManager(ClientWorld world, ClientChunkProvider clientChunkProvider) {
+    public FakeChunkManager(WorldClient world, ChunkProviderClient clientChunkProvider) throws ExecutionException, InterruptedException {
         this.world = world;
         this.clientChunkProvider = clientChunkProvider;
         this.clientChunkProviderExt = (ClientChunkProviderExt) clientChunkProvider;
 
-        long seedHash = ((BiomeManagerAccessor) world.getBiomeManager()).getBiomeZoomSeed();
-        RegistryKey<World> worldKey = world.dimension();
-        ResourceLocation worldId = worldKey.getRegistryName();
-        Path storagePath = client.gameDirectory
+        //DimensionManager
+        long seedHash = world.getSeed(); //Alternative of biomeZoomSeed
+
+        DimensionType dimensionType = world.provider.getDimensionType();
+
+
+        Path storagePath = client.gameDir
                 .toPath()
                 .resolve(".sighted")
                 .resolve(getCurrentWorldOrServerName())
                 .resolve(seedHash + "")
-                .resolve(worldId.getNamespace())
-                .resolve(worldId.getPath());
+                .resolve(dimensionType.getName())
+                .resolve(dimensionType.getSuffix());
 
-        storage = FakeChunkStorage.getFor(storagePath.toFile(), null);
+        storage = FakeChunkStorage.getFor(storagePath.toFile(), world, null, null);
 
         FakeChunkStorage fallbackStorage = null;
-        SaveFormat levelStorage = client.getLevelSource();
-        if (levelStorage.levelExists(FALLBACK_LEVEL_NAME)) {
-            try (SaveFormat.LevelSave session = levelStorage.createAccess(FALLBACK_LEVEL_NAME)) {
-                File worldDirectory = session.getDimensionPath(worldKey);
-                File regionDirectory = new File(worldDirectory, "region");
-                fallbackStorage = FakeChunkStorage.getFor(regionDirectory, getBiomeProvider(session));
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
+
+        ISaveFormat levelStorage = client.getSaveLoader();
+        if (levelStorage.canLoadWorld(FALLBACK_LEVEL_NAME)) {
+            SaveHandler session = (SaveHandler) levelStorage.getSaveLoader(FALLBACK_LEVEL_NAME, false);
+            File worldDirectory = session.getWorldDirectory();
+            File regionDirectory = new File(worldDirectory, "region");
+            fallbackStorage = FakeChunkStorage.getFor(regionDirectory, world, getBiomeProvider(session), session.dataFixer);
         }
         this.fallbackStorage = fallbackStorage;
+    }
+
+    private static String getCurrentWorldOrServerName() {
+        IntegratedServer integratedServer = client.getIntegratedServer();
+        if (integratedServer != null) {
+            return integratedServer.getWorldName();
+        }
+
+        ServerData serverInfo = client.getCurrentServerData();
+        if (serverInfo != null) {
+
+            return serverInfo.serverIP.replace(':', '_');
+        }
+
+        if (client.isConnectedToRealms()) {
+            return "realms";
+        }
+
+        return "unknown";
+    }
+
+    private static BiomeProvider getBiomeProvider(ISaveHandler session) throws ExecutionException, InterruptedException {
+        return new BiomeProvider(session.loadWorldInfo());
     }
 
     public Chunk getChunk(int x, int z) {
@@ -118,38 +130,39 @@ public class FakeChunkManager {
         // Once a minute, force chunks to disk
         if (++ticksSinceLastSave > 20 * 60) {
             // flushWorker is blocking, so we run it on the io pool
-            Util.ioPool().execute(storage::flushWorker);
-
+            Util.runTask(new FutureTask<Void>(() -> {
+                storage.flush();
+                return null;
+            }), LogManager.getLogger());
             ticksSinceLastSave = 0;
         }
 
-        ClientPlayerEntity player = client.player;
+        EntityPlayerSP player = client.player;
         if (player == null) {
             return;
         }
 
-        ClientConfiguration config = Sighted.getConfig().getClientConfig();
-        long time = Util.getMillis();
+        long time = System.currentTimeMillis();
 
-        int newCenterX = player.xChunk;
-        int newCenterZ = player.zChunk;
-        int newViewDistance = client.options.renderDistance;
+        int newCenterX = player.chunkCoordX;
+        int newCenterZ = player.chunkCoordZ;
+        int newViewDistance = client.gameSettings.renderDistanceChunks;
         chunkTracker.update(newCenterX, newCenterZ, newViewDistance, chunkPos -> {
             // Chunk is now outside view distance, can be unloaded / cancelled
             cancelLoad(chunkPos);
             toBeUnloaded.put(chunkPos, time);
-            unloadQueue.add(new Pair<>(chunkPos, time));
+            unloadQueue.add(new MutablePair<>(chunkPos, time));
         }, chunkPos -> {
             // Chunk is now inside view distance, load it
-            int x = ChunkPos.getX(chunkPos);
-            int z = ChunkPos.getZ(chunkPos);
+            int x = CompatChunkPos.getX(chunkPos);
+            int z = CompatChunkPos.getZ(chunkPos);
 
             // We want this chunk, so don't unload it if it's still here
             toBeUnloaded.remove(chunkPos);
             // Not removing it from [unloadQueue], we check [toBeUnloaded] when we poll it.
 
             // If there already is a chunk loaded, there's nothing to do
-            if (clientChunkProvider.getChunk(x, z, ChunkStatus.FULL, false) != null) {
+            if (clientChunkProvider.getLoadedChunk(x, z) != null) {
                 return;
             }
 
@@ -160,15 +173,15 @@ public class FakeChunkManager {
         });
 
         // Anything remaining in the set is no longer needed and can now be unloaded
-        long unloadTime = time - config.unloadDelaySecs.get() * 100L;
+        long unloadTime = time - ClientConfiguration.unloadDelaySecs * 100L;
         int countSinceLastThrottleCheck = 0;
         while (true) {
             Pair<Long, Long> next = unloadQueue.pollFirst();
             if (next == null) {
                 break;
             }
-            long chunkPos = next.getFirst();
-            long queuedTime = next.getSecond();
+            long chunkPos = next.getKey();
+            long queuedTime = next.getValue();
 
             if (queuedTime > unloadTime) {
                 // Unload is still being delayed, put the entry back into the queue
@@ -189,7 +202,7 @@ public class FakeChunkManager {
             }
 
             // This chunk is due for unloading
-            unload(ChunkPos.getX(chunkPos), ChunkPos.getZ(chunkPos), false);
+            unload(CompatChunkPos.getX(chunkPos), CompatChunkPos.getZ(chunkPos), false);
 
             if (countSinceLastThrottleCheck++ > 10) {
                 countSinceLastThrottleCheck = 0;
@@ -211,9 +224,9 @@ public class FakeChunkManager {
             // Done loading
             loadingJobsIter.remove();
 
-            client.getProfiler().push("loadedFakeChunk");
+            client.profiler.startSection("loadedFakeChunk");
             loadingJob.complete();
-            client.getProfiler().pop();
+            client.profiler.endSection();
 
             if (!shouldKeepTicking.getAsBoolean()) {
                 break;
@@ -225,18 +238,18 @@ public class FakeChunkManager {
         return chunkTracker.isInViewDistance(x, z);
     }
 
-    private @Nullable Pair<CompoundNBT, FakeChunkStorage> loadTag(int x, int z) {
+    private @Nullable Pair<NBTTagCompound, FakeChunkStorage> loadTag(int x, int z) {
         ChunkPos chunkPos = new ChunkPos(x, z);
-        CompoundNBT tag;
+        NBTTagCompound tag;
         try {
             tag = storage.loadTag(chunkPos);
             if (tag != null) {
-                return new Pair<>(tag, storage);
+                return new MutablePair<>(tag, storage);
             }
             if (fallbackStorage != null) {
                 tag = fallbackStorage.loadTag(chunkPos);
                 if (tag != null) {
-                    return new Pair<>(tag, fallbackStorage);
+                    return new MutablePair<>(tag, fallbackStorage);
                 }
             }
         } catch (IOException e) {
@@ -245,7 +258,8 @@ public class FakeChunkManager {
         return null;
     }
 
-    public void load(int x, int z, CompoundNBT tag, FakeChunkStorage storage) {
+    public void load(int x, int z, NBTTagCompound
+            tag, FakeChunkStorage storage) {
         Supplier<Chunk> chunkSupplier = storage.deserialize(new ChunkPos(x, z), tag, world);
         if (chunkSupplier == null) {
             return;
@@ -256,11 +270,13 @@ public class FakeChunkManager {
     protected void load(int x, int z, Chunk chunk) {
         fakeChunks.put(ChunkPos.asLong(x, z), chunk);
 
-        world.onChunkLoaded(x, z);
-
+        //world.onChunkLoaded(x, z);
+        /*
         for (int i = 0; i < 16; i++) {
             world.setSectionDirtyWithNeighbors(x, i, z);
         }
+
+         */
 
         clientChunkProviderExt.sighted_onFakeChunkAdded(x, z);
     }
@@ -270,6 +286,7 @@ public class FakeChunkManager {
         cancelLoad(chunkPos);
         Chunk chunk = fakeChunks.remove(chunkPos);
         if (chunk != null) {
+            /*
             LightEngineAccessor lightingEngine = (LightEngineAccessor) clientChunkProvider.getLightEngine();
             ChunkLightProviderExt blockLightEngine = (ChunkLightProviderExt) lightingEngine.getBlockEngine();
             ChunkLightProviderExt skyLightEngine = (ChunkLightProviderExt) lightingEngine.getSkyEngine();
@@ -282,6 +299,8 @@ public class FakeChunkManager {
                 }
             }
 
+             */
+
             clientChunkProviderExt.sighted_onFakeChunkRemoved(x, z);
 
             return true;
@@ -291,68 +310,8 @@ public class FakeChunkManager {
 
     private void cancelLoad(long chunkPos) {
         LoadingJob loadingJob = loadingJobs.remove(chunkPos);
-        if(loadingJob != null) {
+        if (loadingJob != null) {
             loadingJob.cancelled = true;
-        }
-    }
-
-    private static String getCurrentWorldOrServerName() {
-        IntegratedServer integratedServer = client.getSingleplayerServer();
-        if (integratedServer != null) {
-            return integratedServer.getWorldData().getLevelName();
-        }
-
-        ServerData serverInfo = client.getCurrentServer();
-        if (serverInfo != null) {
-            return serverInfo.ip.replace(':','_');
-        }
-
-        if (client.isConnectedToRealms()) {
-            return "realms";
-        }
-
-        return "unknown";
-    }
-
-    private static BiomeProvider getBiomeProvider(SaveFormat.LevelSave session) throws ExecutionException, InterruptedException {
-        // How difficult could this possibly be? Oh, right, datapacks are a thing
-        // Mostly puzzled this together from how MinecraftClient starts the integrated server.
-        try (ResourcePackList resourcePackList = new ResourcePackList(
-                new ServerPackFinder(),
-                new FolderPackFinder(session.getLevelPath(FolderName.DATAPACK_DIR).toFile(), IPackNameDecorator.WORLD)
-        )) {
-            DatapackCodec datapackCodec = MinecraftServer.configurePackRepository(resourcePackList, Minecraft.loadDataPacks(session), false);
-            // We need our own executor, cause the MC one already has lots of packets in it
-            Thread thread = Thread.currentThread();
-            RecursiveEventLoop<Runnable> executor = new RecursiveEventLoop<Runnable>("") {
-                @Override
-                protected Runnable wrapRunnable(Runnable runnable) {
-                    return runnable;
-                }
-
-                @Override
-                protected boolean shouldRun(Runnable runnable) {
-                    return true;
-                }
-
-                @Override
-                protected Thread getRunningThread() {
-                    return thread;
-                }
-            };
-            CompletableFuture<DataPackRegistries> completableFuture = DataPackRegistries.loadResources(
-                    resourcePackList.openAllSelected(),
-                    Commands.EnvironmentType.INTEGRATED,
-                    2,
-                    Util.backgroundExecutor(),
-                    executor
-            );
-            executor.execute(completableFuture::isDone);
-            DataPackRegistries dataPackRegistries = completableFuture.get();
-            IResourceManager resourceManager = dataPackRegistries.getResourceManager();
-            DynamicRegistries.Impl registryTracker = DynamicRegistries.builtin();
-            IServerConfiguration serverConfiguration = Minecraft.loadWorldData(session, registryTracker, resourceManager, datapackCodec);
-            return serverConfiguration.worldGenSettings().overworld().getBiomeSource();
         }
     }
 
@@ -378,7 +337,7 @@ public class FakeChunkManager {
                 return;
             }
             result = Optional.ofNullable(loadTag(x, z))
-                    .map(it -> it.getSecond().deserialize(new ChunkPos(x, z), it.getFirst(), world));
+                    .map(it -> it.getValue().deserialize(new ChunkPos(x, z), it.getKey(), world));
         }
 
         public void complete() {
