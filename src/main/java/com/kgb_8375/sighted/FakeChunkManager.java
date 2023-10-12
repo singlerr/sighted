@@ -2,6 +2,7 @@ package com.kgb_8375.sighted;
 
 import com.kgb_8375.sighted.config.ClientConfiguration;
 import com.kgb_8375.sighted.ext.ClientChunkProviderExt;
+import com.kgb_8375.sighted.mixin.SaveHandlerAccessor;
 import io.netty.util.concurrent.DefaultThreadFactory;
 import it.unimi.dsi.fastutil.longs.*;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;
@@ -81,7 +82,7 @@ public class FakeChunkManager {
                 .resolve(dimensionType.getName())
                 .resolve(dimensionType.getSuffix());
 
-        storage = FakeChunkStorage.getFor(storagePath.toFile(), world, null, null);
+        storage = FakeChunkStorage.getFor(storagePath.toFile(), world, null, Minecraft.getMinecraft().getDataFixer());
 
         FakeChunkStorage fallbackStorage = null;
 
@@ -90,7 +91,7 @@ public class FakeChunkManager {
             SaveHandler session = (SaveHandler) levelStorage.getSaveLoader(FALLBACK_LEVEL_NAME, false);
             File worldDirectory = session.getWorldDirectory();
             File regionDirectory = new File(worldDirectory, "region");
-            fallbackStorage = FakeChunkStorage.getFor(regionDirectory, world, getBiomeProvider(session), session.dataFixer);
+            fallbackStorage = FakeChunkStorage.getFor(regionDirectory, world, getBiomeProvider(session), ((SaveHandlerAccessor) session).getDataFixer());
         }
         this.fallbackStorage = fallbackStorage;
     }

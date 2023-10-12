@@ -11,7 +11,7 @@ public class ClientConfiguration {
     @Config.Comment({"Do not load block entities (e.g. chests) in fake chunks.",
             "These need updating every tick which can add up.",
             "Enabled by default because the render distance for block entities is usually smaller than the server-view distance anyway."})
-    public static boolean noBlockEntities = true;
+    public static boolean noBlockEntities = false;
 
     @Config.Comment({"Delays the unloading of chunks which are outside your view distance.",
             "Saves you from having to reload all chunks when leaving the area for a short moment (e.g. cut scenes).",

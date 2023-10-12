@@ -14,21 +14,23 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import javax.annotation.Nullable;
-
 @Mixin(Minecraft.class)
 public class MinecraftMixin {
+
+
+    @Shadow
+    public WorldClient world;
+
     @Shadow
     @Final
+    public Profiler profiler;
+
+    @Shadow
     public GameSettings gameSettings;
-    @Shadow
-    @Nullable
-    public WorldClient world;
-    @Shadow
-    private Profiler profiler;
 
     @Inject(method = "runGameLoop", at = @At(value = "CONSTANT", args = "stringValue=tick"))
     private void sightedUpdate(CallbackInfo ci) {
+
         if (world == null) {
             return;
         }
@@ -37,6 +39,7 @@ public class MinecraftMixin {
         if (sightedChunkManager == null) {
             return;
         }
+
 
         profiler.startSection("sightedUpdate");
 

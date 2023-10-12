@@ -7,9 +7,11 @@
   ],
   "client": [
     "ClientChunkProviderMixin",
-    "MinecraftMixin",
     "NetHandlerPlayerClientMixin",
-    "WorldClientMixin"
+    "WorldClientMixin",
+    "MinecraftMixin",
+    "SaveHandlerAccessor",
+    "AnvilChunkLoaderAccessor"
   ],
   "injectors": {
     "defaultRequire": 1

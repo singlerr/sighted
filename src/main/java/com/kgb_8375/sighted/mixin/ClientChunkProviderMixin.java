@@ -63,7 +63,7 @@ public abstract class ClientChunkProviderMixin implements ClientChunkProviderExt
     @Inject(method = "getLoadedChunk", at = @At(value = "RETURN", shift = At.Shift.BEFORE), cancellable = true)
     private void getSightedChunk(int x, int z, CallbackInfoReturnable<Chunk> cir) {
         // Did we find a live chunk?
-        if (cir.getReturnValue() != blankChunk) {
+        if (cir.getReturnValue() != null) {
             return;
         }
 
@@ -73,9 +73,11 @@ public abstract class ClientChunkProviderMixin implements ClientChunkProviderExt
 
         // Otherwise, see if we've got one
         Chunk chunk = sightedChunkManager.getChunk(x, z);
+
         if (chunk != null) {
             cir.setReturnValue(chunk);
         }
+
     }
     //Moved to NetHandlerPlayClientMixin
     /*

@@ -1,6 +1,7 @@
 package com.kgb_8375.sighted;
 
 import com.kgb_8375.sighted.config.ClientConfiguration;
+import com.kgb_8375.sighted.mixin.AnvilChunkLoaderAccessor;
 import net.minecraft.block.Block;
 import net.minecraft.client.Minecraft;
 import net.minecraft.nbt.CompressedStreamTools;
@@ -87,7 +88,7 @@ public class FakeChunkStorage extends AnvilChunkLoader {
     }
 
     private NBTTagCompound read(ChunkPos pos) throws IOException {
-        NBTTagCompound tag = this.chunksToSave.get(pos);
+        NBTTagCompound tag = ((AnvilChunkLoaderAccessor) this).getChunksToSave().get(pos);
 
         if (tag == null) {
             DataInputStream dis = RegionFileCache.getChunkInputStream(this.chunkSaveLocation, pos.x, pos.z);
@@ -96,7 +97,7 @@ public class FakeChunkStorage extends AnvilChunkLoader {
                 return null;
             }
 
-            tag = this.fixer.process(FixTypes.CHUNK, CompressedStreamTools.read(dis));
+            tag = ((AnvilChunkLoaderAccessor) this).getFixer().process(FixTypes.CHUNK, CompressedStreamTools.read(dis));
             dis.close(); // Forge: close stream after use
         }
         return tag;
@@ -104,7 +105,8 @@ public class FakeChunkStorage extends AnvilChunkLoader {
 
     public NBTTagCompound serialize(Chunk chunk) {
         NBTTagCompound level = new NBTTagCompound();
-        writeChunkToNBT(chunk, world, level);
+        ((AnvilChunkLoaderAccessor) this).invokeWriteChunkToNBT(chunk, world, level);
+        net.minecraftforge.common.ForgeChunkManager.storeChunkNBT(chunk, level);
         return level;
     }
 
@@ -115,8 +117,8 @@ public class FakeChunkStorage extends AnvilChunkLoader {
     public @Nullable
     Supplier<Chunk> deserialize(ChunkPos pos, NBTTagCompound level, World world) {
 
+        ChunkPos chunkPos = pos;
 
-        ChunkPos chunkPos = new ChunkPos(level.getInteger("xPos"), level.getInteger("zPos"));
 
         int i = level.getInteger("xPos");
         int j = level.getInteger("zPos");
@@ -198,7 +200,6 @@ public class FakeChunkStorage extends AnvilChunkLoader {
                     }
                 }
             }
-
             return chunk;
         };
     }
