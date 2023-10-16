@@ -2,6 +2,7 @@ package com.kgb_8375.sighted.mixin;
 
 import com.kgb_8375.sighted.*;
 import com.kgb_8375.sighted.ext.ClientChunkProviderExt;
+import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import net.minecraft.client.multiplayer.ChunkProviderClient;
 import net.minecraft.client.multiplayer.WorldClient;
 import net.minecraft.nbt.NBTTagCompound;
@@ -22,9 +23,12 @@ import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 @Mixin(ChunkProviderClient.class)
 public abstract class ClientChunkProviderMixin implements ClientChunkProviderExt {
+    private static final ExecutorService threadPool = Executors.newFixedThreadPool(10);
 
     // Tracks which real chunks are visible (whether or not the were actually received), so we can
     // properly unload (i.e. save and replace with fake) them when the server center pos or view distance changes.
@@ -35,7 +39,10 @@ public abstract class ClientChunkProviderMixin implements ClientChunkProviderExt
     protected FakeChunkManager sightedChunkManager;
     @Shadow
     @Final
-    private Chunk blankChunk;
+    private World world;
+    @Shadow
+    @Final
+    private Long2ObjectMap<Chunk> loadedChunks;
 
     @Override
     public VisibleChunksTracker getRealChunksTracker() {
@@ -63,7 +70,7 @@ public abstract class ClientChunkProviderMixin implements ClientChunkProviderExt
     @Inject(method = "getLoadedChunk", at = @At(value = "RETURN", shift = At.Shift.BEFORE), cancellable = true)
     private void getSightedChunk(int x, int z, CallbackInfoReturnable<Chunk> cir) {
         // Did we find a live chunk?
-        if (cir.getReturnValue() != null) {
+        if (loadedChunks.containsKey(ChunkPos.asLong(x, z))) {
             return;
         }
 
@@ -72,10 +79,12 @@ public abstract class ClientChunkProviderMixin implements ClientChunkProviderExt
         }
 
         // Otherwise, see if we've got one
+
         Chunk chunk = sightedChunkManager.getChunk(x, z);
 
         if (chunk != null) {
             cir.setReturnValue(chunk);
+            cir.cancel();
         }
 
     }
@@ -92,7 +101,7 @@ public abstract class ClientChunkProviderMixin implements ClientChunkProviderExt
         sightedChunkManager.unload(x, z, true);
     }
 
-     */
+    */
 
     @Unique
     @Override
@@ -107,7 +116,8 @@ public abstract class ClientChunkProviderMixin implements ClientChunkProviderExt
 
         FakeChunkStorage storage = sightedChunkManager.getStorage();
         NBTTagCompound tag = storage.serialize(chunk);
-        storage.save(chunk.getPos(), tag);
+
+        threadPool.submit(() -> storage.save(chunk, chunk.getPos(), world, tag));
 
         if (sightedChunkManager.shouldBeLoaded(chunkX, chunkZ)) {
             sightedChunkReplacements.add(Pair.of(chunkPos, tag));
@@ -117,6 +127,7 @@ public abstract class ClientChunkProviderMixin implements ClientChunkProviderExt
     @Unique
     @Override
     public void substituteFakeChunksForUnloadedRealOnes() {
+
         for (Pair<Long, NBTTagCompound> entry : sightedChunkReplacements) {
             long chunkPos = entry.getKey();
             int chunkX = CompatChunkPos.getX(chunkPos);

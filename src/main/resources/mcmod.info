@@ -1,14 +1,14 @@
 [
 {
-  "modid": "sighted",
-  "name": "Sighted",
+  "modid": "sightedrewinded",
+  "name": "Sighted-rewinded",
   "description": "sighted",
-  "version": "1.0",
+  "version": "1.2.0",
   "mcversion": "1.12.2",
   "url": "",
   "updateUrl": "",
-  "authorList": ["singlerr"],
-  "credits": "singlerr",
+  "authorList": ["kgb_8375","singlerr"],
+  "credits": "kgb_8375, singlerr",
   "logoFile": "",
   "screenshots": [],
   "dependencies": []

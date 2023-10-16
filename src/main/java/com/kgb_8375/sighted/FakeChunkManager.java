@@ -170,7 +170,7 @@ public class FakeChunkManager {
             // All good, load it
             LoadingJob loadingJob = new LoadingJob(x, z);
             loadingJobs.put(chunkPos, loadingJob);
-            loadExecutor.execute(loadingJob);
+            loadExecutor.submit(loadingJob);
         });
 
         // Anything remaining in the set is no longer needed and can now be unloaded

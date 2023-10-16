@@ -20,8 +20,6 @@ import net.minecraft.world.chunk.storage.AnvilChunkLoader;
 import net.minecraft.world.chunk.storage.ExtendedBlockStorage;
 import net.minecraft.world.chunk.storage.RegionFileCache;
 import net.minecraftforge.fml.common.FMLCommonHandler;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 
 import javax.annotation.Nullable;
 import java.io.DataInputStream;
@@ -29,14 +27,16 @@ import java.io.File;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.Supplier;
 
 public class FakeChunkStorage extends AnvilChunkLoader {
 
-    private static final Logger LOGGER = LogManager.getLogger();
+
     private static final Map<File, FakeChunkStorage> active = new HashMap<>();
-    private static final NibbleArray COMPLETELY_DARK = new NibbleArray();
     private static final NibbleArray COMPLETELY_LIT = new NibbleArray();
+
 
     static {
         for (int x = 0; x < 16; x++) {
@@ -49,12 +49,11 @@ public class FakeChunkStorage extends AnvilChunkLoader {
     }
 
     private final World world;
-    private final BiomeProvider biomeProvider;
+
 
     private FakeChunkStorage(File file, World world, BiomeProvider biomeProvider, DataFixer dataFixer) {
         super(file, dataFixer);
         this.world = world;
-        this.biomeProvider = biomeProvider;
     }
 
     public static FakeChunkStorage getFor(File file, World world, BiomeProvider biomeProvider, DataFixer dataFixer) {
@@ -71,11 +70,12 @@ public class FakeChunkStorage extends AnvilChunkLoader {
         active.clear();
     }
 
-    public void save(ChunkPos pos, NBTTagCompound chunk) {
+    public void save(Chunk realChunk, ChunkPos pos, World world, NBTTagCompound chunk) {
         NBTTagCompound tag = new NBTTagCompound();
         tag.setInteger("DataVersion", 1343); //1.12.2 DataVersion is 1.2.2
         FMLCommonHandler.instance().getDataFixer().writeVersionData(tag);//Forge: data fixer
         tag.setTag("Level", chunk);
+        net.minecraftforge.common.MinecraftForge.EVENT_BUS.post(new net.minecraftforge.event.world.ChunkDataEvent.Save(realChunk, tag));
         addChunkToPending(pos, tag);
     }
 
@@ -85,6 +85,18 @@ public class FakeChunkStorage extends AnvilChunkLoader {
             return null;
         }
         return tag.getCompoundTag("Level");
+    }
+
+    private NBTTagCompound readSync(ChunkPos pos) throws IOException {
+        DataInputStream dis = RegionFileCache.getChunkInputStream(this.chunkSaveLocation, pos.x, pos.z);
+
+        if (dis == null) {
+            return null;
+        }
+
+        NBTTagCompound tag = ((AnvilChunkLoaderAccessor) this).getFixer().process(FixTypes.CHUNK, CompressedStreamTools.read(dis));
+        dis.close(); // Forge: close stream after use
+        return tag;
     }
 
     private NBTTagCompound read(ChunkPos pos) throws IOException {
@@ -117,11 +129,9 @@ public class FakeChunkStorage extends AnvilChunkLoader {
     public @Nullable
     Supplier<Chunk> deserialize(ChunkPos pos, NBTTagCompound level, World world) {
 
-        ChunkPos chunkPos = pos;
-
-
         int i = level.getInteger("xPos");
         int j = level.getInteger("zPos");
+        ChunkPos chunkPos = new ChunkPos(i, j);
         Chunk chunk = new FakeChunk(world, chunkPos);
 
         chunk.setHeightMap(level.getIntArray("HeightMap"));

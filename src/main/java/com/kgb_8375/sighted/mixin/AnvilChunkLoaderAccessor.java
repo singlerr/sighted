@@ -23,4 +23,6 @@ public interface AnvilChunkLoaderAccessor {
     @Invoker
     void invokeWriteChunkToNBT(Chunk chunkIn, World worldIn, NBTTagCompound compound);
 
+    @Invoker
+    void invokeWriteChunkData(ChunkPos pos, NBTTagCompound tagCompound);
 }
